@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 测试临时文件
+test_input.xlsx
+test_output.xlsx
+review_queue_test.xlsx
+
+# 环境
+.env
+venv/
