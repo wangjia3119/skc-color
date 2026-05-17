@@ -13,12 +13,21 @@ from classifier import classify_from_hex
 from shade_mapper import shade_to_range
 from batch_encoder import map_shade_base
 
-# 加载潘通对照表
+# 加载潘通对照表（同时索引 TPG 和 base，便于 TCX 输入时 fallback）
 PANTONE_DB = {}
+PANTONE_BASE_DB = {}  # key=pantone_base（不含后缀），value=首条记录
 with open('C:/Users/jiawa/skc_color/pantone_skc_v2.csv', encoding='utf-8-sig') as f:
     for r in csv.DictReader(f):
         key = r['pantone'].strip().upper()
         PANTONE_DB[key] = r
+        # 提取 base（去掉 TPG/TCX 后缀）
+        base = key
+        for sfx in ('TPG', 'TCX'):
+            if base.endswith(sfx):
+                base = base[:-len(sfx)]
+                break
+        if base not in PANTONE_BASE_DB:
+            PANTONE_BASE_DB[base] = r
 
 FAMILY_NAMES = {
     '0':'白/米白','1':'黄','2':'橙','3':'红',
@@ -38,15 +47,26 @@ def hex_to_openpyxl(hex_color: str) -> str:
 
 
 def lookup_pantone(pantone_input: str) -> dict | None:
-    """查找潘通号，支持多种格式"""
+    """
+    查找潘通号，支持多种格式和系列：
+    - 19-4150TPG / 19-4150TCX / 19-4150 均可命中
+    """
     key = pantone_input.strip().upper()
-    # 直接匹配
+    # 1. 精确匹配
     if key in PANTONE_DB:
         return PANTONE_DB[key]
-    # 尝试补全 TPG 后缀
-    if not key.endswith('TPG'):
+    # 2. 补全 TPG 后缀
+    if not key.endswith('TPG') and not key.endswith('TCX'):
         if key + 'TPG' in PANTONE_DB:
             return PANTONE_DB[key + 'TPG']
+    # 3. TCX → 查 base（因为现有数据是 TPG）
+    base = key
+    for sfx in ('TPG', 'TCX'):
+        if base.endswith(sfx):
+            base = base[:-len(sfx)]
+            break
+    if base in PANTONE_BASE_DB:
+        return PANTONE_BASE_DB[base]
     return None
 
 
@@ -75,6 +95,8 @@ def process_excel(input_path: str, pantone_col: str = 'pantone', output_path: st
         '色阶区间':   last_col + 4,
         '颜色预览':   last_col + 5,
         '需审核':     last_col + 6,
+        'TPG色号':    last_col + 7,
+        'TCX色号':    last_col + 8,
     }
 
     # 写表头
@@ -106,6 +128,14 @@ def process_excel(input_path: str, pantone_col: str = 'pantone', output_path: st
             shade_range  = result['shade_range']
             hex_color    = result['hex']
             needs_review = result['needs_review'] == 'True'
+            # 互转色号：从原始 pantone_base 推算
+            p_base = result['pantone'].upper()
+            for sfx in ('TPG', 'TCX'):
+                if p_base.endswith(sfx):
+                    p_base = p_base[:-len(sfx)]
+                    break
+            tpg_val = p_base + 'TPG'
+            tcx_val = p_base + 'TCX'
             found += 1
             if needs_review:
                 review += 1
@@ -114,6 +144,7 @@ def process_excel(input_path: str, pantone_col: str = 'pantone', output_path: st
             family = '-'
             hex_color = None
             needs_review = False
+            tpg_val = tcx_val = '未找到'
             not_found += 1
 
         # 写入各列
@@ -122,6 +153,8 @@ def process_excel(input_path: str, pantone_col: str = 'pantone', output_path: st
         ws.cell(row=row_idx, column=new_cols['色阶'],     value=shade)
         ws.cell(row=row_idx, column=new_cols['色阶区间'], value=shade_range)
         ws.cell(row=row_idx, column=new_cols['需审核'],   value='是' if needs_review else '否')
+        ws.cell(row=row_idx, column=new_cols['TPG色号'],  value=tpg_val)
+        ws.cell(row=row_idx, column=new_cols['TCX色号'],  value=tcx_val)
 
         # 颜色预览色块
         preview_cell = ws.cell(row=row_idx, column=new_cols['颜色预览'], value='  ')
@@ -141,7 +174,7 @@ def process_excel(input_path: str, pantone_col: str = 'pantone', output_path: st
             ws.cell(row=row_idx, column=col_idx).border = border
 
     # 调整列宽
-    col_widths = {'SKC编码':10,'色系':10,'色阶':8,'色阶区间':18,'颜色预览':10,'需审核':8}
+    col_widths = {'SKC编码':10,'色系':10,'色阶':8,'色阶区间':18,'颜色预览':10,'需审核':8,'TPG色号':14,'TCX色号':14}
     for col_name, width in col_widths.items():
         ws.column_dimensions[get_column_letter(new_cols[col_name])].width = width
 

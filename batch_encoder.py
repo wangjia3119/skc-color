@@ -16,8 +16,8 @@ from shade_mapper import shade_to_range
 
 
 def map_shade_base(l_star: float) -> int:
-    raw = round((1 - l_star / 100) * 899) + 100
-    return max(100, min(999, raw))
+    raw = round((1 - l_star / 100) * 89999) + 10000
+    return max(10000, min(99999, raw))
 
 
 def encode_batch(input_rows: list) -> list:
@@ -54,16 +54,14 @@ def encode_batch(input_rows: list) -> list:
         for r in by_family[fam]:
             base = map_shade_base(r['lab_l'])
             shade = base
-            # 步进找空位（向深色方向 +1，避免破坏浅色区间）
-            while shade in used and shade <= 999:
+            while shade in used and shade <= 99999:
                 shade += 1
-            if shade > 999:
-                # 极少数情况：向浅色方向找
+            if shade > 99999:
                 shade = base - 1
-                while shade in used and shade >= 100:
+                while shade in used and shade >= 10000:
                     shade -= 1
             used.add(shade)
-            skc = '%d%03d' % (fam, shade) if fam != -1 else None
+            skc = '%d%05d' % (fam, shade) if fam != -1 else None
             results.append({
                 **r,
                 'skc':         skc,
@@ -85,7 +83,8 @@ if __name__ == '__main__':
             if not text:
                 continue
             for line in text.split('\n'):
-                m = re.match(r'^\d+\s+(.+?)\s+(\d{2}-\d{4}TPG)\s+(\d+,\d+,\d+)\s+(#[0-9A-Fa-f]{6})', line)
+                # 兼容 TPG 和 TCX 后缀
+                m = re.match(r'^\d+\s+(.+?)\s+(\d{2}-\d{4}(?:TPG|TCX))\s+(\d+,\d+,\d+)\s+(#[0-9A-Fa-f]{6})', line)
                 if m:
                     raw_rows.append({'pantone': m.group(2), 'name': m.group(1).strip(),
                                      'rgb': m.group(3), 'hex': m.group(4)})

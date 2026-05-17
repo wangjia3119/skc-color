@@ -15,7 +15,7 @@ sys.path.insert(0, 'C:/Users/jiawa/skc_color')
 
 from flask import Flask, request, jsonify
 import sqlite3, time
-from database import DB_PATH, lookup, register
+from database import DB_PATH, lookup, lookup_all_series, register, _normalize_pantone, SERIES
 from encoder import generate_skc
 
 app = Flask(__name__)
@@ -47,18 +47,25 @@ def encode():
     if pantone:
         existing = lookup(pantone.upper())
         if existing:
+            base, _ = _normalize_pantone(existing['pantone'])
+            # 同 base 下的其他系列
+            all_series = lookup_all_series(pantone)
+            aliases = {r['series']: r['pantone'] for r in all_series}
             return jsonify({
-                'source':      'database',
-                'skc':         existing['skc'],
-                'pantone':     existing['pantone'],
-                'name':        existing['name'],
-                'hex':         existing['hex'],
-                'family':      existing['family'],
-                'family_name': FAMILY_NAMES.get(existing['family'], '?'),
-                'shade':       existing['shade'],
-                'shade_range': existing['shade_range'],
-                'needs_review':bool(existing['needs_review']),
-                'status':      existing['status'],
+                'source':       'database',
+                'skc':          existing['skc'],
+                'pantone':      existing['pantone'],
+                'pantone_base': existing.get('pantone_base', base),
+                'series':       existing.get('series', 'TPG'),
+                'aliases':      aliases,
+                'name':         existing['name'],
+                'hex':          existing['hex'],
+                'family':       existing['family'],
+                'family_name':  FAMILY_NAMES.get(existing['family'], '?'),
+                'shade':        existing['shade'],
+                'shade_range':  existing['shade_range'],
+                'needs_review': bool(existing['needs_review']),
+                'status':       existing['status'],
             })
 
     target_hex = hex_val
@@ -180,6 +187,101 @@ def confirm_review():
                     'final_family': final_fam, 'family_name': FAMILY_NAMES.get(int(final_fam), '?')})
 
 
+@app.get('/api/convert')
+def convert():
+    """
+    TCX ↔ TPG 双向转化
+    GET /api/convert?pantone=19-4150TPG&to=TCX
+    GET /api/convert?pantone=19-4150TCX&to=TPG
+    GET /api/convert?pantone=19-4150TPG  （返回所有可用系列）
+    """
+    pantone = request.args.get('pantone', '').strip().upper()
+    to_series = request.args.get('to', '').strip().upper()
+
+    if not pantone:
+        return jsonify({'error': '需要提供 pantone 参数'}), 400
+
+    base, from_series = _normalize_pantone(pantone)
+    all_records = lookup_all_series(pantone)
+
+    if not all_records:
+        # 数据库中没有该色号（只有 TPG 数据时 TCX 查不到）
+        # 按 base 推算对应色号
+        if to_series and to_series in SERIES:
+            target_pantone = base + to_series
+            source_record = lookup(pantone)
+            return jsonify({
+                'source_pantone': pantone,
+                'source_series':  from_series,
+                'target_pantone': target_pantone,
+                'target_series':  to_series,
+                'skc':            source_record['skc'] if source_record else None,
+                'note':           '目标系列色号从数据库推算（色值相同，系列不同）',
+                'in_db':          False,
+            })
+        return jsonify({'error': '色号 %s 不在数据库中' % pantone}), 404
+
+    # 有数据库记录
+    result = {
+        'pantone_base':  base,
+        'from_series':   from_series,
+        'available':     {r['series']: r['pantone'] for r in all_records},
+        'skc':           all_records[0]['skc'],
+        'name':          all_records[0]['name'],
+        'hex':           all_records[0]['hex'],
+        'family':        all_records[0]['family'],
+        'family_name':   FAMILY_NAMES.get(all_records[0]['family'], '?'),
+        'shade_range':   all_records[0]['shade_range'],
+    }
+
+    if to_series:
+        if to_series not in SERIES:
+            return jsonify({'error': '不支持的系列: %s，支持: %s' % (to_series, ', '.join(SERIES))}), 400
+        target = next((r for r in all_records if r['series'] == to_series), None)
+        result['target_series']  = to_series
+        result['target_pantone'] = (base + to_series) if not target else target['pantone']
+        result['target_in_db']   = target is not None
+
+    return jsonify(result)
+
+
+@app.post('/api/convert/batch')
+def convert_batch():
+    """
+    批量转化
+    POST /api/convert/batch
+    Body: {"pantones": ["19-4150TPG", "18-1660TPG"], "to": "TCX"}
+    """
+    body = request.get_json(silent=True) or {}
+    pantones = body.get('pantones', [])
+    to_series = body.get('to', '').strip().upper()
+
+    if not pantones:
+        return jsonify({'error': '需要提供 pantones 列表'}), 400
+    if len(pantones) > 500:
+        return jsonify({'error': '单次最多 500 条'}), 400
+
+    results = []
+    for p in pantones:
+        p = str(p).strip().upper()
+        base, from_series = _normalize_pantone(p)
+        rec = lookup(p)
+        target_pantone = (base + to_series) if to_series else None
+        results.append({
+            'input':          p,
+            'pantone_base':   base,
+            'from_series':    from_series,
+            'target_pantone': target_pantone,
+            'to_series':      to_series or None,
+            'skc':            rec['skc'] if rec else None,
+            'name':           rec['name'] if rec else None,
+            'hex':            rec['hex'] if rec else None,
+            'found':          rec is not None,
+        })
+
+    return jsonify({'count': len(results), 'results': results})
+
+
 @app.get('/api/stats')
 def stats():
     conn = sqlite3.connect(DB_PATH)
@@ -212,5 +314,7 @@ if __name__ == '__main__':
     print('  GET  /api/search?name=&family=&limit=')
     print('  GET  /api/review?family=&limit=')
     print('  POST /api/review/confirm')
+    print('  GET  /api/convert?pantone=&to=TCX|TPG')
+    print('  POST /api/convert/batch')
     print('  GET  /api/stats')
     app.run(debug=False, port=5000)

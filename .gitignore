@@ -3,10 +3,21 @@ __pycache__/
 *.pyc
 *.pyo
 
+# 数据库（可由 import_all.py 重建，不跟踪二进制）
+skc_master.db
+*.db
+
+# 旧版离线数据文件（已被 SKC_Query_v3.html 取代）
+_db_compact.js
+_db.tmp
+data.json
+data_check.json
+
 # 测试临时文件
 test_input.xlsx
 test_output.xlsx
 review_queue_test.xlsx
+nul
 
 # 环境
 .env
